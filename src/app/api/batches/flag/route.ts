@@ -30,7 +30,7 @@ export async function POST(request: Request) {
       return jsonError("evidenceNote is required");
     }
 
-    const pharmacist = getDemoRoleRecord("Pharmacist");
+    const pharmacist = await getDemoRoleRecord("Pharmacist");
     if (!pharmacist) {
       return jsonError("Pharmacist demo role missing", 500);
     }
@@ -41,7 +41,7 @@ export async function POST(request: Request) {
       return jsonError("Pharmacist ATP credential not available", 403);
     }
 
-    const tag = getTagByBatchUid(batchAttestationUID);
+    const tag = await getTagByBatchUid(batchAttestationUID);
     if (!tag) {
       return jsonError("Unknown batch", 404);
     }
@@ -54,7 +54,7 @@ export async function POST(request: Request) {
       revokeOriginal: status === BatchStatus.RECALLED,
     });
 
-    updateTagBatchStatus(batchAttestationUID, status, result.uid);
+    await updateTagBatchStatus(batchAttestationUID, status, result.uid);
 
     return jsonOk({
       flagAttestationUID: result.uid,

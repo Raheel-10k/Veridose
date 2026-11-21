@@ -20,7 +20,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const tag = getTagByBatchUid(batchAttestationUID);
+    const tag = await getTagByBatchUid(batchAttestationUID);
     if (!tag) {
       return jsonError("Unknown batchAttestationUID — issue a batch first", 404);
     }
@@ -36,7 +36,7 @@ export async function POST(request: Request) {
       return jsonError("Off-chain custody signature failed verification", 500);
     }
 
-    const record = saveOffchainHandoff({
+    const record = await saveOffchainHandoff({
       id: randomUUID(),
       batchAttestationUID,
       signedAttestationJson: result.json,

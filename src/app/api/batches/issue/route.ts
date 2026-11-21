@@ -37,7 +37,7 @@ export async function POST(request: Request) {
 
     const uid = generateTagUid();
     const aesKeyHex = generateAesKeyHex();
-    const tag = createTag({
+    const tag = await createTag({
       uid,
       batchAttestationUID: anchored.uid,
       drugName,

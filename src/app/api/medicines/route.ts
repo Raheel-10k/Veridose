@@ -6,7 +6,7 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const medicines = listMedicines();
+    const medicines = await listMedicines();
     return jsonOk({ medicines });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to list medicines";
@@ -26,7 +26,7 @@ export async function POST(request: Request) {
       return jsonError("Medicine name is required", 400);
     }
 
-    const created = addMedicine({
+    const created = await addMedicine({
       name,
       description,
       defaultDosage,

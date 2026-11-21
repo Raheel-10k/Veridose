@@ -10,10 +10,10 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const batchUid = searchParams.get("batchUid");
     if (batchUid) {
-      const checkpoints = listCheckpointsByBatch(batchUid);
+      const checkpoints = await listCheckpointsByBatch(batchUid);
       return jsonOk({ checkpoints });
     }
-    const checkpoints = listAllCheckpoints();
+    const checkpoints = await listAllCheckpoints();
     return jsonOk({ checkpoints });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to load checkpoints";
@@ -45,7 +45,7 @@ export async function POST(request: Request) {
       status: "SCHEDULED",
     });
 
-    const checkpoint = createCheckpoint({
+    const checkpoint = await createCheckpoint({
       batchAttestationUID,
       routePlan,
       checkpointName,

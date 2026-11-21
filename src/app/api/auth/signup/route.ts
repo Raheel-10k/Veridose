@@ -30,7 +30,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const existing = getUserByEmail(email);
+    const existing = await getUserByEmail(email);
     if (existing) {
       return NextResponse.json(
         { ok: false, error: "An account with this email already exists" },
@@ -38,7 +38,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const user = createUser({
+    const user = await createUser({
       email,
       password,
       name,

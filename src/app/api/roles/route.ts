@@ -6,7 +6,8 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const roles = listDemoRoles().map((r) => ({
+  const allRoles = await listDemoRoles();
+  const roles = allRoles.map((r) => ({
     ...r,
     explorerUrl: r.atpAttestationUID
       ? attestationExplorerUrl(r.atpAttestationUID)

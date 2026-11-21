@@ -24,7 +24,7 @@ export async function POST(request: Request) {
       return jsonError("checkpointId and status (INSPECTED_OK or FLAGGED_TAMPERED) are required", 400);
     }
 
-    const checkpoint = getCheckpointById(checkpointId);
+    const checkpoint = await getCheckpointById(checkpointId);
     if (!checkpoint) {
       return jsonError("Checkpoint not found", 404);
     }
@@ -34,7 +34,7 @@ export async function POST(request: Request) {
 
     // If inspector detected tampering or manual flag was raised
     if (status === "FLAGGED_TAMPERED") {
-      const tag = getTagByBatchUid(checkpoint.batchAttestationUID);
+      const tag = await getTagByBatchUid(checkpoint.batchAttestationUID);
       const drugName = tag?.drugName || "Medicine Product";
 
       try {
@@ -50,14 +50,14 @@ export async function POST(request: Request) {
       }
 
       // Mark the batch in DB as flagged suspicious (status = 1)
-      updateTagBatchStatus(
+      await updateTagBatchStatus(
         checkpoint.batchAttestationUID,
         BatchStatus.FLAGGED_SUSPICIOUS,
         flagAttestationUID
       );
     }
 
-    const updated = updateCheckpointInspection({
+    const updated = await updateCheckpointInspection({
       id: checkpointId,
       status,
       inspectorName,

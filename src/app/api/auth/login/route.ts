@@ -18,7 +18,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const user = verifyUserPassword(email, password);
+    const user = await verifyUserPassword(email, password);
     if (!user) {
       return NextResponse.json(
         { ok: false, error: "Invalid email or password" },

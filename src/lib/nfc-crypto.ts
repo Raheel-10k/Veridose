@@ -112,13 +112,14 @@ export function generateSimulatedTapUrl(
   return `${baseUrl.replace(/\/$/, "")}${path}`;
 }
 
-export function verifyNfcTap(
+/** Async NFC tap verifier — reads tag from MongoDB. */
+export async function verifyNfcTap(
   uid: string,
   counter: number,
   cmac: string
-): NfcVerifyResult {
+): Promise<NfcVerifyResult> {
   const normalizedUid = uid.toLowerCase();
-  const tag = getTagByUid(normalizedUid);
+  const tag = await getTagByUid(normalizedUid);
   if (!tag) {
     return { status: "UNKNOWN_TAG", authentic: false, uid: normalizedUid };
   }
@@ -155,7 +156,7 @@ export function verifyNfcTap(
     };
   }
 
-  updateTagCounter(normalizedUid, counter);
+  await updateTagCounter(normalizedUid, counter);
   return {
     status: "AUTHENTIC_TAG",
     authentic: true,

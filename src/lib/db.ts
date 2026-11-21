@@ -1,8 +1,10 @@
-import Database from "better-sqlite3";
-import fs from "fs";
-import path from "path";
+/**
+ * db.ts — Pure MongoDB implementation.
+ * No SQLite / better-sqlite3 anywhere in this file.
+ */
 import crypto from "crypto";
 import { deriveDemoRoles } from "./demo-roles";
+import { getMongoDb, ensureMongoIndexes } from "./mongodb";
 import type {
   CheckpointRecord,
   DemoRoleName,
@@ -14,249 +16,152 @@ import type {
   UserRole,
 } from "./types";
 
-const DATA_DIR = path.join(process.cwd(), "data");
-const DB_PATH = path.join(DATA_DIR, "veridose.db");
-
-let dbInstance: Database.Database | null = null;
-
-function ensureDataDir() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-}
-
-export function getDb(): Database.Database {
-  if (dbInstance) return dbInstance;
-  ensureDataDir();
-  const db = new Database(DB_PATH);
-  db.pragma("journal_mode = WAL");
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS tags (
-      uid TEXT PRIMARY KEY,
-      batchAttestationUID TEXT NOT NULL,
-      drugName TEXT NOT NULL,
-      lotNumber TEXT NOT NULL,
-      aesKeyHex TEXT NOT NULL,
-      lastCounter INTEGER NOT NULL DEFAULT 0,
-      batchStatus INTEGER NOT NULL DEFAULT 0,
-      flagAttestationUID TEXT,
-      createdAt TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS offchainHandoffs (
-      id TEXT PRIMARY KEY,
-      batchAttestationUID TEXT NOT NULL,
-      signedAttestationJson TEXT NOT NULL,
-      signer TEXT NOT NULL,
-      createdAt TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS demoRoles (
-      role TEXT PRIMARY KEY,
-      address TEXT NOT NULL,
-      licenseId TEXT NOT NULL,
-      atpAttestationUID TEXT,
-      createdAt TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS users (
-      id TEXT PRIMARY KEY,
-      email TEXT UNIQUE NOT NULL,
-      passwordHash TEXT NOT NULL,
-      salt TEXT NOT NULL,
-      name TEXT NOT NULL,
-      role TEXT NOT NULL,
-      orgName TEXT NOT NULL,
-      facilityName TEXT NOT NULL,
-      createdAt TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS medicines (
-      id TEXT PRIMARY KEY,
-      name TEXT UNIQUE NOT NULL,
-      description TEXT,
-      defaultDosage TEXT,
-      category TEXT,
-      createdBy TEXT,
-      createdAt TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS checkpoints (
-      id TEXT PRIMARY KEY,
-      batchAttestationUID TEXT NOT NULL,
-      routePlan TEXT NOT NULL,
-      checkpointName TEXT NOT NULL,
-      location TEXT NOT NULL,
-      estimatedArrival TEXT NOT NULL,
-      lastTxHash TEXT NOT NULL,
-      status TEXT NOT NULL DEFAULT 'SCHEDULED',
-      inspectedAt TEXT,
-      inspectorName TEXT,
-      inspectorNote TEXT,
-      attestationUID TEXT,
-      createdAt TEXT NOT NULL
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_handoffs_batch
-      ON offchainHandoffs(batchAttestationUID);
-    CREATE INDEX IF NOT EXISTS idx_users_email
-      ON users(email);
-    CREATE INDEX IF NOT EXISTS idx_checkpoints_batch
-      ON checkpoints(batchAttestationUID);
-  `);
-
-  // Lightweight migrations for iterative local DBs
-  const tagCols = db
-    .prepare("PRAGMA table_info(tags)")
-    .all() as Array<{ name: string }>;
-  const names = new Set(tagCols.map((c) => c.name));
-  if (!names.has("batchStatus")) {
-    db.exec(
-      "ALTER TABLE tags ADD COLUMN batchStatus INTEGER NOT NULL DEFAULT 0"
-    );
-  }
-  if (!names.has("flagAttestationUID")) {
-    db.exec("ALTER TABLE tags ADD COLUMN flagAttestationUID TEXT");
-  }
-
-  seedDemoRoles(db);
-  seedMedicines(db);
-  seedDefaultUsers(db);
-  dbInstance = db;
-  return db;
-}
-
-function seedDemoRoles(db: Database.Database) {
-  const relayer = process.env.RELAYER_PRIVATE_KEY?.trim();
-  const roles = deriveDemoRoles(relayer);
-  const insert = db.prepare(`
-    INSERT OR IGNORE INTO demoRoles (role, address, licenseId, atpAttestationUID, createdAt)
-    VALUES (@role, @address, @licenseId, NULL, @createdAt)
-  `);
-  const now = new Date().toISOString();
-  const tx = db.transaction(() => {
-    for (const role of roles) {
-      insert.run({
-        role: role.role,
-        address: role.address,
-        licenseId: role.licenseId,
-        createdAt: now,
-      });
-    }
-  });
-  tx();
-}
+// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function hashPassword(password: string, salt: string): string {
   return crypto.scryptSync(password, salt, 64).toString("hex");
 }
 
-function seedMedicines(db: Database.Database) {
-  // Let organizations decide their own medicine values, names, dosages, and types.
-  // We do not force static pre-seeded medicines into the catalog table.
-  const existing = db.prepare("SELECT COUNT(*) AS c FROM medicines").get() as {
-    c: number;
-  };
-  if (existing.c > 0) return;
-}
+// ─── Seed data ────────────────────────────────────────────────────────────────
 
-function seedDefaultUsers(db: Database.Database) {
-  const existing = db.prepare("SELECT COUNT(*) AS c FROM users").get() as {
-    c: number;
-  };
-  if (existing.c > 0) return;
+const DEFAULT_USERS: Array<{
+  email: string;
+  name: string;
+  role: UserRole;
+  orgName: string;
+  facilityName: string;
+}> = [
+  {
+    email: "manufacturer@pharma.com",
+    name: "Alice Manufacturer",
+    role: "Manufacturer",
+    orgName: "PharmaCorp Global",
+    facilityName: "PharmaCorp Plant Alpha (Geneva)",
+  },
+  {
+    email: "depot@pharma.com",
+    name: "Bob Depot Manager",
+    role: "Depot",
+    orgName: "PharmaCorp Global",
+    facilityName: "PharmaCorp Central Hub / Depot 1",
+  },
+  {
+    email: "distributor@logistics.com",
+    name: "David Distributor",
+    role: "Distributor",
+    orgName: "Apex ColdChain Logistics",
+    facilityName: "Apex Hub West Africa",
+  },
+  {
+    email: "pharmacist@clinic.com",
+    name: "Dr. Paul Pharmacist",
+    role: "Pharmacist",
+    orgName: "Central Health Dispensary",
+    facilityName: "Downtown Pharmacy Unit 4",
+  },
+  {
+    email: "regulator@health.gov",
+    name: "Rita Regulator",
+    role: "Regulator",
+    orgName: "National Medicine Regulatory Authority",
+    facilityName: "Surveillance & Inspection Directorate",
+  },
+];
 
-  const defaultUsers: Array<{
-    email: string;
-    name: string;
-    role: UserRole;
-    orgName: string;
-    facilityName: string;
-  }> = [
-    {
-      email: "manufacturer@pharma.com",
-      name: "Alice Manufacturer",
-      role: "Manufacturer",
-      orgName: "PharmaCorp Global",
-      facilityName: "PharmaCorp Plant Alpha (Geneva)",
-    },
-    {
-      email: "depot@pharma.com",
-      name: "Bob Depot Manager",
-      role: "Depot",
-      orgName: "PharmaCorp Global",
-      facilityName: "PharmaCorp Central Hub / Depot 1",
-    },
-    {
-      email: "distributor@logistics.com",
-      name: "David Distributor",
-      role: "Distributor",
-      orgName: "Apex ColdChain Logistics",
-      facilityName: "Apex Hub West Africa",
-    },
-    {
-      email: "pharmacist@clinic.com",
-      name: "Dr. Paul Pharmacist",
-      role: "Pharmacist",
-      orgName: "Central Health Dispensary",
-      facilityName: "Downtown Pharmacy Unit 4",
-    },
-    {
-      email: "regulator@health.gov",
-      name: "Rita Regulator",
-      role: "Regulator",
-      orgName: "National Medicine Regulatory Authority",
-      facilityName: "Surveillance & Inspection Directorate",
-    },
-  ];
+let seeded = false;
+export async function ensureMongoSeeded(): Promise<void> {
+  if (seeded) return;
+  const mdb = await getMongoDb();
+  await ensureMongoIndexes(mdb);
 
-  const insert = db.prepare(`
-    INSERT INTO users (id, email, passwordHash, salt, name, role, orgName, facilityName, createdAt)
-    VALUES (@id, @email, @passwordHash, @salt, @name, @role, @orgName, @facilityName, @createdAt)
-  `);
-
-  const now = new Date().toISOString();
-  for (const u of defaultUsers) {
-    const salt = crypto.randomBytes(16).toString("hex");
-    const passwordHash = hashPassword("password123", salt);
-    insert.run({
-      id: crypto.randomUUID(),
-      email: u.email,
-      passwordHash,
-      salt,
-      name: u.name,
-      role: u.role,
-      orgName: u.orgName,
-      facilityName: u.facilityName,
-      createdAt: now,
-    });
+  // Seed demo roles
+  const demoCount = await mdb.collection("demoRoles").countDocuments();
+  if (demoCount === 0) {
+    const relayer = process.env.RELAYER_PRIVATE_KEY?.trim();
+    const roles = deriveDemoRoles(relayer);
+    const now = new Date().toISOString();
+    await mdb.collection("demoRoles").insertMany(
+      roles.map((r) => ({
+        role: r.role,
+        address: r.address,
+        licenseId: r.licenseId,
+        atpAttestationUID: null,
+        createdAt: now,
+      }))
+    );
   }
+
+  // Seed default users
+  const userCount = await mdb.collection("users").countDocuments();
+  if (userCount === 0) {
+    const now = new Date().toISOString();
+    const docs = DEFAULT_USERS.map((u) => {
+      const salt = crypto.randomBytes(16).toString("hex");
+      const passwordHash = hashPassword("password123", salt);
+      return {
+        id: crypto.randomUUID(),
+        email: u.email.toLowerCase(),
+        passwordHash,
+        salt,
+        name: u.name,
+        role: u.role,
+        orgName: u.orgName,
+        facilityName: u.facilityName,
+        createdAt: now,
+      };
+    });
+    await mdb.collection("users").insertMany(docs);
+  }
+
+  seeded = true;
 }
 
-// User / Auth DB Helpers
-export function getUserByEmail(email: string): (UserRecord & { passwordHash: string; salt: string }) | null {
-  const row = getDb()
-    .prepare("SELECT * FROM users WHERE lower(email) = lower(?)")
-    .get(email) as (UserRecord & { passwordHash: string; salt: string }) | undefined;
-  return row ?? null;
+// ─── User / Auth ──────────────────────────────────────────────────────────────
+
+export async function getUserByEmail(
+  email: string
+): Promise<(UserRecord & { passwordHash: string; salt: string }) | null> {
+  const normalized = email.trim().toLowerCase();
+  await ensureMongoSeeded();
+  const mdb = await getMongoDb();
+  const doc = await mdb.collection("users").findOne({ email: normalized });
+  if (!doc) return null;
+  return {
+    id: doc.id as string,
+    email: doc.email as string,
+    name: doc.name as string,
+    role: doc.role as UserRole,
+    orgName: doc.orgName as string,
+    facilityName: doc.facilityName as string,
+    passwordHash: doc.passwordHash as string,
+    salt: doc.salt as string,
+    createdAt: doc.createdAt as string,
+  };
 }
 
-export function getUserById(id: string): UserRecord | null {
-  const row = getDb()
-    .prepare("SELECT id, email, name, role, orgName, facilityName, createdAt FROM users WHERE id = ?")
-    .get(id) as UserRecord | undefined;
-  return row ?? null;
+export async function getUserById(id: string): Promise<UserRecord | null> {
+  const mdb = await getMongoDb();
+  const doc = await mdb.collection("users").findOne({ id });
+  if (!doc) return null;
+  return {
+    id: doc.id as string,
+    email: doc.email as string,
+    name: doc.name as string,
+    role: doc.role as UserRole,
+    orgName: doc.orgName as string,
+    facilityName: doc.facilityName as string,
+    createdAt: doc.createdAt as string,
+  };
 }
 
-export function createUser(params: {
+export async function createUser(params: {
   email: string;
   password: string;
   name: string;
   role: UserRole;
   orgName?: string;
   facilityName?: string;
-}): UserRecord {
-  const db = getDb();
+}): Promise<UserRecord> {
   const id = crypto.randomUUID();
   const salt = crypto.randomBytes(16).toString("hex");
   const passwordHash = hashPassword(params.password, salt);
@@ -266,51 +171,62 @@ export function createUser(params: {
     email: params.email.trim().toLowerCase(),
     name: params.name.trim(),
     role: params.role,
-    orgName: params.orgName?.trim() || (params.role === "Depot" ? "PharmaCorp Global" : `${params.name} Org`),
-    facilityName: params.facilityName?.trim() || (params.role === "Depot" ? "Central Depot Facility" : "Main Facility"),
+    orgName:
+      params.orgName?.trim() ||
+      (params.role === "Depot" ? "PharmaCorp Global" : `${params.name} Org`),
+    facilityName:
+      params.facilityName?.trim() ||
+      (params.role === "Depot" ? "Central Depot Facility" : "Main Facility"),
     createdAt: now,
   };
-
-  db.prepare(`
-    INSERT INTO users (id, email, passwordHash, salt, name, role, orgName, facilityName, createdAt)
-    VALUES (@id, @email, @passwordHash, @salt, @name, @role, @orgName, @facilityName, @createdAt)
-  `).run({
-    ...user,
-    passwordHash,
-    salt,
-  });
-
+  const mdb = await getMongoDb();
+  await mdb.collection("users").insertOne({ ...user, passwordHash, salt });
   return user;
 }
 
-export function verifyUserPassword(email: string, password: string): UserRecord | null {
-  const user = getUserByEmail(email);
+export async function verifyUserPassword(
+  email: string,
+  password: string
+): Promise<UserRecord | null> {
+  const user = await getUserByEmail(email);
   if (!user) return null;
   const hash = hashPassword(password, user.salt);
   if (crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(user.passwordHash))) {
-    const { passwordHash: _ignoredPassword, salt: _ignoredSalt, ...safeUser } = user;
-    void _ignoredPassword;
-    void _ignoredSalt;
+    const { passwordHash: _p, salt: _s, ...safeUser } = user;
+    void _p;
+    void _s;
     return safeUser;
   }
   return null;
 }
 
-// Medicine Catalog DB Helpers
-export function listMedicines(): MedicineCatalogRecord[] {
-  return getDb()
-    .prepare("SELECT * FROM medicines ORDER BY name ASC")
-    .all() as MedicineCatalogRecord[];
+// ─── Medicine Catalog ─────────────────────────────────────────────────────────
+
+export async function listMedicines(): Promise<MedicineCatalogRecord[]> {
+  const mdb = await getMongoDb();
+  const docs = await mdb
+    .collection<MedicineCatalogRecord>("medicines")
+    .find({})
+    .sort({ name: 1 })
+    .toArray();
+  return docs.map((d) => ({
+    id: d.id,
+    name: d.name,
+    description: d.description || "",
+    defaultDosage: d.defaultDosage || "",
+    category: d.category || "General Medicine",
+    createdBy: d.createdBy || "system",
+    createdAt: d.createdAt,
+  }));
 }
 
-export function addMedicine(params: {
+export async function addMedicine(params: {
   name: string;
   description?: string;
   defaultDosage?: string;
   category?: string;
   createdBy?: string;
-}): MedicineCatalogRecord {
-  const db = getDb();
+}): Promise<MedicineCatalogRecord> {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   const record: MedicineCatalogRecord = {
@@ -322,23 +238,20 @@ export function addMedicine(params: {
     createdBy: params.createdBy || "system",
     createdAt: now,
   };
-
-  db.prepare(`
-    INSERT INTO medicines (id, name, description, defaultDosage, category, createdBy, createdAt)
-    VALUES (@id, @name, @description, @defaultDosage, @category, @createdBy, @createdAt)
-  `).run(record);
-
+  const mdb = await getMongoDb();
+  await mdb.collection("medicines").insertOne(record as any);
   return record;
 }
 
-export function createTag(
+// ─── Tags ─────────────────────────────────────────────────────────────────────
+
+export async function createTag(
   tag: Omit<TagRecord, "createdAt" | "batchStatus" | "flagAttestationUID"> & {
     createdAt?: string;
     batchStatus?: number;
     flagAttestationUID?: string | null;
   }
-): TagRecord {
-  const db = getDb();
+): Promise<TagRecord> {
   const record: TagRecord = {
     uid: tag.uid.toLowerCase(),
     batchAttestationUID: tag.batchAttestationUID,
@@ -350,121 +263,195 @@ export function createTag(
     flagAttestationUID: tag.flagAttestationUID ?? null,
     createdAt: tag.createdAt ?? new Date().toISOString(),
   };
-  db.prepare(
-    `INSERT INTO tags (uid, batchAttestationUID, drugName, lotNumber, aesKeyHex, lastCounter, batchStatus, flagAttestationUID, createdAt)
-     VALUES (@uid, @batchAttestationUID, @drugName, @lotNumber, @aesKeyHex, @lastCounter, @batchStatus, @flagAttestationUID, @createdAt)`
-  ).run(record);
+  const mdb = await getMongoDb();
+  await mdb.collection("tags").insertOne({ ...record });
   return record;
 }
 
-export function updateTagBatchStatus(
+export async function getTagByUid(uid: string): Promise<TagRecord | null> {
+  const normalized = uid.toLowerCase();
+  const mdb = await getMongoDb();
+  const doc = await mdb.collection<TagRecord>("tags").findOne({ uid: normalized });
+  if (!doc) return null;
+  return {
+    uid: doc.uid,
+    batchAttestationUID: doc.batchAttestationUID,
+    drugName: doc.drugName,
+    lotNumber: doc.lotNumber,
+    aesKeyHex: doc.aesKeyHex,
+    lastCounter: doc.lastCounter,
+    batchStatus: doc.batchStatus,
+    flagAttestationUID: doc.flagAttestationUID ?? null,
+    createdAt: doc.createdAt,
+  };
+}
+
+export async function getTagByBatchUid(
+  batchAttestationUID: string
+): Promise<TagRecord | null> {
+  const mdb = await getMongoDb();
+  const doc = await mdb
+    .collection<TagRecord>("tags")
+    .findOne({ batchAttestationUID });
+  if (!doc) return null;
+  return {
+    uid: doc.uid,
+    batchAttestationUID: doc.batchAttestationUID,
+    drugName: doc.drugName,
+    lotNumber: doc.lotNumber,
+    aesKeyHex: doc.aesKeyHex,
+    lastCounter: doc.lastCounter,
+    batchStatus: doc.batchStatus,
+    flagAttestationUID: doc.flagAttestationUID ?? null,
+    createdAt: doc.createdAt,
+  };
+}
+
+export async function listTags(): Promise<TagRecord[]> {
+  const mdb = await getMongoDb();
+  const docs = await mdb
+    .collection<TagRecord>("tags")
+    .find({})
+    .sort({ createdAt: -1 })
+    .toArray();
+  return docs.map((d) => ({
+    uid: d.uid,
+    batchAttestationUID: d.batchAttestationUID,
+    drugName: d.drugName,
+    lotNumber: d.lotNumber,
+    aesKeyHex: d.aesKeyHex,
+    lastCounter: d.lastCounter,
+    batchStatus: d.batchStatus,
+    flagAttestationUID: d.flagAttestationUID ?? null,
+    createdAt: d.createdAt,
+  }));
+}
+
+export async function updateTagCounter(
+  uid: string,
+  lastCounter: number
+): Promise<void> {
+  const normalized = uid.toLowerCase();
+  const mdb = await getMongoDb();
+  await mdb
+    .collection("tags")
+    .updateOne({ uid: normalized }, { $set: { lastCounter } });
+}
+
+export async function updateTagBatchStatus(
   batchAttestationUID: string,
   batchStatus: number,
   flagAttestationUID: string
-): void {
-  getDb()
-    .prepare(
-      `UPDATE tags SET batchStatus = ?, flagAttestationUID = ? WHERE batchAttestationUID = ?`
-    )
-    .run(batchStatus, flagAttestationUID, batchAttestationUID);
+): Promise<void> {
+  const mdb = await getMongoDb();
+  await mdb
+    .collection("tags")
+    .updateMany(
+      { batchAttestationUID },
+      { $set: { batchStatus, flagAttestationUID } }
+    );
 }
 
-export function getTagByUid(uid: string): TagRecord | null {
-  const row = getDb()
-    .prepare("SELECT * FROM tags WHERE uid = ?")
-    .get(uid.toLowerCase()) as TagRecord | undefined;
-  return row ?? null;
-}
+// ─── Offchain Handoffs ────────────────────────────────────────────────────────
 
-export function getTagByBatchUid(batchAttestationUID: string): TagRecord | null {
-  const found = getDb()
-    .prepare("SELECT * FROM tags WHERE batchAttestationUID = ?")
-    .get(batchAttestationUID) as TagRecord | undefined;
-  return found ?? null;
-}
-
-export function listTags(): TagRecord[] {
-  return getDb()
-    .prepare("SELECT * FROM tags ORDER BY createdAt DESC")
-    .all() as TagRecord[];
-}
-
-export function updateTagCounter(uid: string, lastCounter: number): void {
-  getDb()
-    .prepare("UPDATE tags SET lastCounter = ? WHERE uid = ?")
-    .run(lastCounter, uid.toLowerCase());
-}
-
-export function saveOffchainHandoff(
+export async function saveOffchainHandoff(
   handoff: Omit<OffchainHandoffRecord, "createdAt"> & { createdAt?: string }
-): OffchainHandoffRecord {
+): Promise<OffchainHandoffRecord> {
   const record: OffchainHandoffRecord = {
     ...handoff,
     createdAt: handoff.createdAt ?? new Date().toISOString(),
   };
-  getDb()
-    .prepare(
-      `INSERT INTO offchainHandoffs (id, batchAttestationUID, signedAttestationJson, signer, createdAt)
-       VALUES (@id, @batchAttestationUID, @signedAttestationJson, @signer, @createdAt)`
-    )
-    .run(record);
+  const mdb = await getMongoDb();
+  await mdb.collection("offchainHandoffs").insertOne({ ...record });
   return record;
 }
 
-export function listHandoffsByBatch(
+export async function listHandoffsByBatch(
   batchAttestationUID: string
-): OffchainHandoffRecord[] {
-  return getDb()
-    .prepare(
-      "SELECT * FROM offchainHandoffs WHERE batchAttestationUID = ? ORDER BY createdAt ASC"
-    )
-    .all(batchAttestationUID) as OffchainHandoffRecord[];
+): Promise<OffchainHandoffRecord[]> {
+  const mdb = await getMongoDb();
+  const docs = await mdb
+    .collection<OffchainHandoffRecord>("offchainHandoffs")
+    .find({ batchAttestationUID })
+    .sort({ createdAt: 1 })
+    .toArray();
+  return docs.map((d) => ({
+    id: d.id,
+    batchAttestationUID: d.batchAttestationUID,
+    signedAttestationJson: d.signedAttestationJson,
+    signer: d.signer,
+    createdAt: d.createdAt,
+  }));
 }
 
-export function listDemoRoles(): DemoRoleRecord[] {
-  return getDb()
-    .prepare("SELECT * FROM demoRoles ORDER BY role ASC")
-    .all() as DemoRoleRecord[];
+// ─── Demo Roles ───────────────────────────────────────────────────────────────
+
+export async function listDemoRoles(): Promise<DemoRoleRecord[]> {
+  await ensureMongoSeeded();
+  const mdb = await getMongoDb();
+  const docs = await mdb
+    .collection<DemoRoleRecord>("demoRoles")
+    .find({})
+    .sort({ role: 1 })
+    .toArray();
+  return docs.map((d) => ({
+    role: d.role,
+    address: d.address,
+    licenseId: d.licenseId,
+    atpAttestationUID: d.atpAttestationUID ?? null,
+    createdAt: d.createdAt,
+  }));
 }
 
-export function getDemoRoleRecord(role: DemoRoleName): DemoRoleRecord | null {
-  const row = getDb()
-    .prepare("SELECT * FROM demoRoles WHERE role = ?")
-    .get(role) as DemoRoleRecord | undefined;
-  return row ?? null;
+export async function getDemoRoleRecord(
+  role: DemoRoleName
+): Promise<DemoRoleRecord | null> {
+  await ensureMongoSeeded();
+  const mdb = await getMongoDb();
+  const doc = await mdb.collection<DemoRoleRecord>("demoRoles").findOne({ role });
+  if (!doc) return null;
+  return {
+    role: doc.role,
+    address: doc.address,
+    licenseId: doc.licenseId,
+    atpAttestationUID: doc.atpAttestationUID ?? null,
+    createdAt: doc.createdAt,
+  };
 }
 
-export function setDemoRoleAtpUid(
+export async function setDemoRoleAtpUid(
   role: DemoRoleName,
   atpAttestationUID: string
-): void {
-  getDb()
-    .prepare("UPDATE demoRoles SET atpAttestationUID = ? WHERE role = ?")
-    .run(atpAttestationUID, role);
+): Promise<void> {
+  const mdb = await getMongoDb();
+  await mdb
+    .collection("demoRoles")
+    .updateOne({ role }, { $set: { atpAttestationUID } });
 }
 
-export function clearDemoData(): void {
-  const db = getDb();
-  db.exec(`
-    DELETE FROM tags;
-    DELETE FROM offchainHandoffs;
-    DELETE FROM checkpoints;
-  `);
+export async function clearDemoData(): Promise<void> {
+  const mdb = await getMongoDb();
+  await Promise.all([
+    mdb.collection("tags").deleteMany({}),
+    mdb.collection("offchainHandoffs").deleteMany({}),
+    mdb.collection("checkpoints").deleteMany({}),
+  ]);
 }
 
-// Checkpoint and Route DB Helpers
-export function createCheckpoint(params: {
+// ─── Checkpoints ──────────────────────────────────────────────────────────────
+
+export async function createCheckpoint(params: {
   batchAttestationUID: string;
   routePlan: string;
   checkpointName: string;
   location: string;
   estimatedArrival: string;
   lastTxHash?: string;
-}): CheckpointRecord {
-  const db = getDb();
+}): Promise<CheckpointRecord> {
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
-  const lastTxHash = params.lastTxHash || `0x${crypto.randomBytes(32).toString("hex")}`;
+  const lastTxHash =
+    params.lastTxHash || `0x${crypto.randomBytes(32).toString("hex")}`;
   const record: CheckpointRecord = {
     id,
     batchAttestationUID: params.batchAttestationUID,
@@ -476,67 +463,106 @@ export function createCheckpoint(params: {
     status: "SCHEDULED",
     createdAt: now,
   };
-
-  db.prepare(`
-    INSERT INTO checkpoints (
-      id, batchAttestationUID, routePlan, checkpointName, location,
-      estimatedArrival, lastTxHash, status, createdAt
-    ) VALUES (
-      @id, @batchAttestationUID, @routePlan, @checkpointName, @location,
-      @estimatedArrival, @lastTxHash, @status, @createdAt
-    )
-  `).run(record);
-
+  const mdb = await getMongoDb();
+  await mdb.collection("checkpoints").insertOne({ ...record });
   return record;
 }
 
-export function listCheckpointsByBatch(batchAttestationUID: string): CheckpointRecord[] {
-  return getDb()
-    .prepare("SELECT * FROM checkpoints WHERE batchAttestationUID = ? ORDER BY createdAt ASC")
-    .all(batchAttestationUID) as CheckpointRecord[];
+export async function listCheckpointsByBatch(
+  batchAttestationUID: string
+): Promise<CheckpointRecord[]> {
+  const mdb = await getMongoDb();
+  const docs = await mdb
+    .collection<CheckpointRecord>("checkpoints")
+    .find({ batchAttestationUID })
+    .sort({ createdAt: 1 })
+    .toArray();
+  return docs.map((d) => ({
+    id: d.id,
+    batchAttestationUID: d.batchAttestationUID,
+    routePlan: d.routePlan,
+    checkpointName: d.checkpointName,
+    location: d.location,
+    estimatedArrival: d.estimatedArrival,
+    lastTxHash: d.lastTxHash,
+    status: d.status,
+    inspectedAt: d.inspectedAt,
+    inspectorName: d.inspectorName,
+    inspectorNote: d.inspectorNote,
+    attestationUID: d.attestationUID,
+    createdAt: d.createdAt,
+  }));
 }
 
-export function listAllCheckpoints(): CheckpointRecord[] {
-  return getDb()
-    .prepare("SELECT * FROM checkpoints ORDER BY createdAt DESC")
-    .all() as CheckpointRecord[];
+export async function listAllCheckpoints(): Promise<CheckpointRecord[]> {
+  const mdb = await getMongoDb();
+  const docs = await mdb
+    .collection<CheckpointRecord>("checkpoints")
+    .find({})
+    .sort({ createdAt: -1 })
+    .toArray();
+  return docs.map((d) => ({
+    id: d.id,
+    batchAttestationUID: d.batchAttestationUID,
+    routePlan: d.routePlan,
+    checkpointName: d.checkpointName,
+    location: d.location,
+    estimatedArrival: d.estimatedArrival,
+    lastTxHash: d.lastTxHash,
+    status: d.status,
+    inspectedAt: d.inspectedAt,
+    inspectorName: d.inspectorName,
+    inspectorNote: d.inspectorNote,
+    attestationUID: d.attestationUID,
+    createdAt: d.createdAt,
+  }));
 }
 
-export function getCheckpointById(id: string): CheckpointRecord | null {
-  const row = getDb()
-    .prepare("SELECT * FROM checkpoints WHERE id = ?")
-    .get(id) as CheckpointRecord | undefined;
-  return row ?? null;
+export async function getCheckpointById(
+  id: string
+): Promise<CheckpointRecord | null> {
+  const mdb = await getMongoDb();
+  const doc = await mdb.collection<CheckpointRecord>("checkpoints").findOne({ id });
+  if (!doc) return null;
+  return {
+    id: doc.id,
+    batchAttestationUID: doc.batchAttestationUID,
+    routePlan: doc.routePlan,
+    checkpointName: doc.checkpointName,
+    location: doc.location,
+    estimatedArrival: doc.estimatedArrival,
+    lastTxHash: doc.lastTxHash,
+    status: doc.status,
+    inspectedAt: doc.inspectedAt,
+    inspectorName: doc.inspectorName,
+    inspectorNote: doc.inspectorNote,
+    attestationUID: doc.attestationUID,
+    createdAt: doc.createdAt,
+  };
 }
 
-export function updateCheckpointInspection(params: {
+export async function updateCheckpointInspection(params: {
   id: string;
   status: "INSPECTED_OK" | "FLAGGED_TAMPERED";
   inspectorName: string;
   inspectorNote?: string;
   attestationUID?: string;
   newTxHash?: string;
-}): CheckpointRecord | null {
-  const db = getDb();
+}): Promise<CheckpointRecord | null> {
   const now = new Date().toISOString();
-  db.prepare(`
-    UPDATE checkpoints
-    SET status = @status,
-        inspectedAt = @inspectedAt,
-        inspectorName = @inspectorName,
-        inspectorNote = @inspectorNote,
-        attestationUID = @attestationUID,
-        lastTxHash = COALESCE(@newTxHash, lastTxHash)
-    WHERE id = @id
-  `).run({
-    id: params.id,
+  const mdb = await getMongoDb();
+  const updateDoc: Record<string, unknown> = {
     status: params.status,
     inspectedAt: now,
     inspectorName: params.inspectorName,
     inspectorNote: params.inspectorNote || "",
     attestationUID: params.attestationUID || null,
-    newTxHash: params.newTxHash || null,
-  });
-
+  };
+  if (params.newTxHash) {
+    updateDoc.lastTxHash = params.newTxHash;
+  }
+  await mdb
+    .collection("checkpoints")
+    .updateOne({ id: params.id }, { $set: updateDoc });
   return getCheckpointById(params.id);
 }

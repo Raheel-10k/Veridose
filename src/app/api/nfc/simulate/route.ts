@@ -16,9 +16,9 @@ export async function POST(request: Request) {
       : undefined;
 
     const tag = uid
-      ? getTagByUid(uid)
+      ? await getTagByUid(uid)
       : batchAttestationUID
-        ? getTagByBatchUid(batchAttestationUID)
+        ? await getTagByBatchUid(batchAttestationUID)
         : null;
 
     if (!tag) {

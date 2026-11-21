@@ -318,7 +318,7 @@ export async function verifyBatchFullState(
     BigInt(attestation.revocationTime) > BigInt(0);
   const decoded = tryDecodeBatchStatus(attestation.data);
 
-  const handoffs = listHandoffsByBatch(batchAttestationUID);
+  const handoffs = await listHandoffsByBatch(batchAttestationUID);
   let custodyVerified = handoffs.length === 0 ? false : true;
   let verifiedCount = 0;
   for (const h of handoffs) {

@@ -20,9 +20,9 @@ import { BatchStatus } from "./constants";
 
 export async function loadPreSeededDemoScenario() {
   const env = peekServerEnv();
-  clearDemoData();
+  await clearDemoData();
 
-  const roles = listDemoRoles();
+  const roles = await listDemoRoles();
   const atpResults: Record<string, string | null> = {};
 
   if (env.RELAYER_PRIVATE_KEY && env.ATP_SCHEMA_UID) {
@@ -38,7 +38,7 @@ export async function loadPreSeededDemoScenario() {
           licenseId: role.licenseId,
           active: true,
         });
-        setDemoRoleAtpUid(role.role, result.uid);
+        await setDemoRoleAtpUid(role.role, result.uid);
         atpResults[role.role] = result.uid;
       } catch (err) {
         atpResults[role.role] = null;
@@ -74,7 +74,7 @@ export async function loadPreSeededDemoScenario() {
 
   const uid = generateTagUid();
   const aesKeyHex = generateAesKeyHex();
-  const tag = createTag({
+  const tag = await createTag({
     uid,
     batchAttestationUID,
     drugName: "Amoxicillin 500mg",
@@ -87,9 +87,9 @@ export async function loadPreSeededDemoScenario() {
 
   return {
     onChain,
-    roles: listDemoRoles(),
-    manufacturer: getDemoRoleRecord("Manufacturer"),
-    pharmacist: getDemoRoleRecord("Pharmacist"),
+    roles: await listDemoRoles(),
+    manufacturer: await getDemoRoleRecord("Manufacturer"),
+    pharmacist: await getDemoRoleRecord("Pharmacist"),
     atpResults,
     tag,
     batchAttestationUID,

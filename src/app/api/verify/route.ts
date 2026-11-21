@@ -16,8 +16,8 @@ export async function GET(request: Request) {
 
     let nfcResult = null as ReturnType<typeof verifyNfcTap> | null;
     let tag =
-      (parsed.uid ? getTagByUid(parsed.uid) : null) ||
-      (parsed.batchUid ? getTagByBatchUid(parsed.batchUid) : null);
+      (parsed.uid ? await getTagByUid(parsed.uid) : null) ||
+      (parsed.batchUid ? await getTagByBatchUid(parsed.batchUid) : null);
 
     if (parsed.uid && parsed.counter != null && parsed.cmac) {
       nfcResult = verifyNfcTap(parsed.uid, parsed.counter, parsed.cmac);
@@ -38,7 +38,7 @@ export async function GET(request: Request) {
       }
     }
 
-    const handoffs = batchUid ? listHandoffsByBatch(batchUid) : [];
+    const handoffs = batchUid ? await listHandoffsByBatch(batchUid) : [];
     let custodyVerified = false;
     let custodyCount = handoffs.length;
     if (handoffs.length > 0) {
@@ -104,7 +104,7 @@ function buildVerdict(
     custodyVerified: boolean;
     custodyCount: number;
   } | null,
-  tag: ReturnType<typeof getTagByUid>
+  tag: TagRecord | null
 ): TrustVerdictPayload {
   if (nfc && nfc.status === "CLONED_REPLAY_DETECTED") {
     return {
