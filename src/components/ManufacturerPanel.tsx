@@ -1,7 +1,18 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { ExternalLink, FlaskConical, Copy, ShieldAlert, Nfc, PlusCircle, Check } from "lucide-react";
+import {
+  ExternalLink,
+  FlaskConical,
+  Copy,
+  ShieldAlert,
+  Nfc,
+  PlusCircle,
+  Check,
+  QrCode,
+  Download,
+} from "lucide-react";
+import QRCode from "qrcode";
 import {
   getWebNfcSupport,
   toAbsoluteVerifyUrl,
@@ -43,6 +54,10 @@ export function ManufacturerPanel({ onIssued }: { onIssued?: () => void }) {
   const [simMessage, setSimMessage] = useState<string | null>(null);
   const [nfcWriteStatus, setNfcWriteStatus] = useState<string | null>(null);
   const [nfcWriting, setNfcWriting] = useState(false);
+  const [copiedUrl, setCopiedUrl] = useState(false);
+  const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string | null>(null);
+  const [mintedVerifyUrl, setMintedVerifyUrl] = useState<string | null>(null);
+  const [mintingUrl, setMintingUrl] = useState(false);
 
   const nfcSupport = useMemo(() => getWebNfcSupport(), []);
 
@@ -124,6 +139,15 @@ export function ManufacturerPanel({ onIssued }: { onIssued?: () => void }) {
         tag: data.tag,
         simulateTapUrl: data.simulateTapUrl,
       });
+      // Generate initial QR code and URL for the freshly issued batch
+      const origin =
+        process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ||
+        (typeof window !== "undefined" ? window.location.origin : "");
+      const fullUrl = toAbsoluteVerifyUrl(String(data.simulateTapUrl), origin);
+      setMintedVerifyUrl(fullUrl);
+      QRCode.toDataURL(fullUrl, { width: 280, margin: 2 })
+        .then(setQrCodeDataUrl)
+        .catch(() => {});
       onIssued?.();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Issue failed");
@@ -150,6 +174,49 @@ export function ManufacturerPanel({ onIssued }: { onIssued?: () => void }) {
     }
   }
 
+  async function generateOrRefreshVerifyUrl() {
+    if (!result) return;
+    setMintingUrl(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/nfc/simulate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "next", uid: result.tag.uid }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Could not generate tap URL");
+
+      const origin =
+        process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ||
+        window.location.origin;
+      const absolute = toAbsoluteVerifyUrl(String(data.url), origin);
+      setMintedVerifyUrl(absolute);
+
+      const qr = await QRCode.toDataURL(absolute, {
+        width: 280,
+        margin: 2,
+        color: { dark: "#0f172a", light: "#ffffff" },
+      });
+      setQrCodeDataUrl(qr);
+      setSimMessage(`Minted valid counter #${data.counter} verification URL`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to generate URL");
+    } finally {
+      setMintingUrl(false);
+    }
+  }
+
+  async function copyVerifyUrl(urlToCopy: string) {
+    try {
+      await navigator.clipboard.writeText(urlToCopy);
+      setCopiedUrl(true);
+      setTimeout(() => setCopiedUrl(false), 2000);
+    } catch {
+      // fallback
+    }
+  }
+
   async function writeToPhysicalTag() {
     if (!result) return;
     setNfcWriteStatus(null);
@@ -169,9 +236,23 @@ export function ManufacturerPanel({ onIssued }: { onIssued?: () => void }) {
         process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ||
         window.location.origin;
       const absolute = toAbsoluteVerifyUrl(String(data.url), publicOrigin);
+      setMintedVerifyUrl(absolute);
+
+      // Also generate QR code for the minted URL
+      try {
+        const qr = await QRCode.toDataURL(absolute, {
+          width: 280,
+          margin: 2,
+          color: { dark: "#0f172a", light: "#ffffff" },
+        });
+        setQrCodeDataUrl(qr);
+      } catch {
+        // non-fatal
+      }
+
       if (/localhost|127\.0\.0\.1/i.test(absolute)) {
         throw new Error(
-          "Cannot write a localhost URL to a phone tag. Set NEXT_PUBLIC_APP_URL to a public HTTPS URL (ngrok/Cloudflare tunnel), restart npm run dev, then retry on Chrome Android."
+          "Physical tag writing requires a public HTTPS origin. Set NEXT_PUBLIC_APP_URL in .env to a public URL (e.g. ngrok/Cloudflare tunnel) when writing physical NFC tags. You can still copy the URL or scan the QR code below!"
         );
       }
       setNfcWriteStatus(
@@ -336,17 +417,100 @@ export function ManufacturerPanel({ onIssued }: { onIssued?: () => void }) {
           </a>
           <div className="rounded-md bg-[#e8f0ec] px-3 py-3 text-xs text-[var(--ink-muted)]">
             <p className="font-semibold text-[var(--ink)]">
-              Physical NFC sticker (prototype)
+              Physical NFC Sticker &amp; Digital Fallback (QR / Direct URL)
             </p>
             <p className="mt-1">
-              Write the signed batch URL onto a blank NTAG213/215 sticker with
-              Chrome on Android. That sticker becomes this medicine batch for
-              Patient / Scanner.
+              If you have a physical NTAG213/215 sticker and Chrome on Android, click &ldquo;Write batch URL to NFC tag&rdquo;.
+              If you do not have an NFC sticker, copy the verification URL or scan the dynamic QR Code below with any phone camera or barcode scanner.
             </p>
             {!nfcSupport.supported && (
               <p className="mt-2 text-amber-800">{nfcSupport.reason}</p>
             )}
           </div>
+
+          {/* Fallback / Verification URL and QR Code Card */}
+          {mintedVerifyUrl && (
+            <div className="rounded-lg border-2 border-emerald-600/30 bg-emerald-50/50 p-4 space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <QrCode className="h-5 w-5 text-emerald-800" />
+                  <span className="font-semibold text-emerald-950 text-sm">
+                    Medicine Verification URL &amp; QR Code
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={generateOrRefreshVerifyUrl}
+                  disabled={mintingUrl}
+                  className="text-xs font-semibold text-emerald-700 hover:text-emerald-900 underline"
+                >
+                  {mintingUrl ? "Minting new URL…" : "↻ Mint Next Fresh Verification URL"}
+                </button>
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-center gap-4">
+                {qrCodeDataUrl ? (
+                  <div className="flex flex-col items-center rounded-md bg-white p-2 border border-emerald-200 shadow-sm shrink-0">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={qrCodeDataUrl}
+                      alt="Medicine Verification QR Code"
+                      className="h-44 w-44 object-contain rounded"
+                    />
+                    <a
+                      href={qrCodeDataUrl}
+                      download={`batch-${result.attestationUID.slice(0, 10)}-qr.png`}
+                      className="mt-2 inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 hover:underline"
+                    >
+                      <Download className="h-3 w-3" /> Download QR
+                    </a>
+                  </div>
+                ) : (
+                  <div className="flex h-44 w-44 items-center justify-center rounded bg-gray-100 text-xs text-gray-500">
+                    Generating QR…
+                  </div>
+                )}
+
+                <div className="flex-1 w-full space-y-2">
+                  <label className="text-xs font-semibold text-emerald-900 uppercase tracking-wider block">
+                    Shareable / Testable NFC Verification URL
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      readOnly
+                      value={mintedVerifyUrl}
+                      className="w-full text-xs font-mono bg-white border border-emerald-300 rounded px-2.5 py-2 text-gray-800 select-all focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => copyVerifyUrl(mintedVerifyUrl)}
+                      className="btn-ghost shrink-0 py-2 px-3 text-xs inline-flex items-center gap-1 bg-white hover:bg-emerald-100 border border-emerald-300 text-emerald-800 font-medium"
+                      title="Copy URL to clipboard"
+                    >
+                      {copiedUrl ? (
+                        <>
+                          <Check className="h-4 w-4 text-emerald-600" />
+                          <span>Copied!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="h-4 w-4" />
+                          <span>Copy</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <p className="text-[11px] text-emerald-800/80 leading-relaxed">
+                    💡 <strong>How to test without physical NFC:</strong>
+                    <br />• <strong>Copy URL</strong>: Paste into any browser tab to trigger the patient verification flow directly.
+                    <br />• <strong>Scan QR</strong>: Open your phone camera or QR scanner to open this exact verification link.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="flex flex-wrap gap-2 pt-2">
             <button
               type="button"
@@ -364,7 +528,7 @@ export function ManufacturerPanel({ onIssued }: { onIssued?: () => void }) {
               className="btn-ghost"
               onClick={() => simulate("next")}
             >
-              <Copy className="h-4 w-4" />
+              <ExternalLink className="h-4 w-4" />
               Simulate Patient Scan
             </button>
             <button
