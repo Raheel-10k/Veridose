@@ -239,7 +239,7 @@ export async function addMedicine(params: {
     createdAt: now,
   };
   const mdb = await getMongoDb();
-  await mdb.collection("medicines").insertOne(record as any);
+  await mdb.collection<MedicineCatalogRecord>("medicines").insertOne(record);
   return record;
 }
 
