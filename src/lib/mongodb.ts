@@ -1,6 +1,5 @@
 import { MongoClient, Db } from "mongodb";
 
-const uri = process.env.MONGODB_URI;
 const dbName = process.env.MONGODB_DB_NAME || "veridose";
 
 let client: MongoClient | null = null;
