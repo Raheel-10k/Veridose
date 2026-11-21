@@ -4,6 +4,7 @@ import type { DemoRoleName } from "./types";
 const ROLE_ORDER: DemoRoleName[] = [
   "Regulator",
   "Manufacturer",
+  "Depot",
   "Distributor",
   "Pharmacist",
 ];
@@ -11,6 +12,7 @@ const ROLE_ORDER: DemoRoleName[] = [
 const LICENSE_BY_ROLE: Record<DemoRoleName, string> = {
   Regulator: "REG-BASE-001",
   Manufacturer: "MFG-FDA-4421",
+  Depot: "DEPOT-MFG-0089",
   Distributor: "DIST-GDP-8890",
   Pharmacist: "PHARM-NABP-3312",
 };

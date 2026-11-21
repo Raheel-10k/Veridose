@@ -49,6 +49,7 @@ interface NDEFReader extends EventTarget {
   ): void;
 }
 
+// eslint-disable-next-line no-var
 declare var NDEFReader: {
   prototype: NDEFReader;
   new (): NDEFReader;

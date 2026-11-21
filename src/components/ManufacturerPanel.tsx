@@ -1,25 +1,38 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { ExternalLink, FlaskConical, Copy, ShieldAlert, Nfc } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { ExternalLink, FlaskConical, Copy, ShieldAlert, Nfc, PlusCircle, Check } from "lucide-react";
 import {
   getWebNfcSupport,
   toAbsoluteVerifyUrl,
   writeBatchUrlToNfcTag,
 } from "@/lib/web-nfc-client";
 
-const DRUG_PRESETS = [
-  "Amoxicillin 500mg",
-  "Artemether-Lumefantrine",
-  "Insulin Glargine 100U/mL",
-];
+interface MedicineItem {
+  id: string;
+  name: string;
+  description?: string;
+  defaultDosage?: string;
+  category?: string;
+}
 
 export function ManufacturerPanel({ onIssued }: { onIssued?: () => void }) {
-  const [drugName, setDrugName] = useState(DRUG_PRESETS[0]!);
+  const [medicines, setMedicines] = useState<string[]>([]);
+  const [drugName, setDrugName] = useState("");
   const [lotNumber, setLotNumber] = useState("LOT-2026-001");
   const [expiry, setExpiry] = useState("2027-06-30");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // New med modal / form states
+  const [showAddMed, setShowAddMed] = useState(false);
+  const [newMedName, setNewMedName] = useState("");
+  const [newMedCategory, setNewMedCategory] = useState("Critical Care");
+  const [newMedDosage, setNewMedDosage] = useState("");
+  const [newMedDesc, setNewMedDesc] = useState("");
+  const [medSuccessMsg, setMedSuccessMsg] = useState<string | null>(null);
+  const [addingMed, setAddingMed] = useState(false);
+
   const [result, setResult] = useState<{
     attestationUID: string;
     explorerUrl: string;
@@ -32,6 +45,64 @@ export function ManufacturerPanel({ onIssued }: { onIssued?: () => void }) {
   const [nfcWriting, setNfcWriting] = useState(false);
 
   const nfcSupport = useMemo(() => getWebNfcSupport(), []);
+
+  // Fetch medicines catalog
+  async function loadMedicines() {
+    try {
+      const res = await fetch("/api/medicines");
+      const data = await res.json();
+      if (data.medicines && data.medicines.length > 0) {
+        const names = data.medicines.map((m: MedicineItem) => m.name);
+        setMedicines(names);
+        setDrugName((current) => (names.includes(current) ? current : names[0]));
+      } else {
+        setMedicines([]);
+        setDrugName("");
+        setShowAddMed(true); // Open add med directly when org has no medicines yet
+      }
+    } catch {
+      setMedicines([]);
+      setDrugName("");
+    }
+  }
+
+  useEffect(() => {
+    loadMedicines();
+  }, []);
+
+  async function handleAddMedicine(e: React.FormEvent) {
+    e.preventDefault();
+    if (!newMedName.trim()) return;
+    setAddingMed(true);
+    setError(null);
+    setMedSuccessMsg(null);
+    try {
+      const res = await fetch("/api/medicines", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: newMedName.trim(),
+          category: newMedCategory.trim(),
+          defaultDosage: newMedDosage.trim(),
+          description: newMedDesc.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to add medicine");
+
+      setMedicines((prev) => Array.from(new Set([...prev, data.medicine.name])));
+      setDrugName(data.medicine.name);
+      setMedSuccessMsg(`Added "${data.medicine.name}" to medicine catalog!`);
+      setNewMedName("");
+      setNewMedDosage("");
+      setNewMedDesc("");
+      setTimeout(() => setShowAddMed(false), 1200);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to add medicine");
+    } finally {
+      setAddingMed(false);
+    }
+  }
 
   async function issueBatch(e: React.FormEvent) {
     e.preventDefault();
@@ -134,18 +205,84 @@ export function ManufacturerPanel({ onIssued }: { onIssued?: () => void }) {
 
       <form onSubmit={issueBatch} className="grid gap-4 sm:grid-cols-2">
         <div className="sm:col-span-2">
-          <label className="label">Drug name</label>
-          <select
-            className="field"
-            value={drugName}
-            onChange={(e) => setDrugName(e.target.value)}
-          >
-            {DRUG_PRESETS.map((d) => (
-              <option key={d} value={d}>
-                {d}
-              </option>
-            ))}
-          </select>
+          <div className="flex items-center justify-between mb-1">
+            <label className="label mb-0">Select or Add Medicine</label>
+            <button
+              type="button"
+              onClick={() => setShowAddMed(!showAddMed)}
+              className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--accent-strong)] hover:underline"
+            >
+              <PlusCircle className="h-3.5 w-3.5" />
+              {showAddMed ? "Cancel new medicine" : "+ Add custom medicine"}
+            </button>
+          </div>
+
+          {showAddMed ? (
+            <div className="mb-4 rounded-lg border border-emerald-300 bg-emerald-50/70 p-3 space-y-3">
+              <p className="text-xs font-medium text-emerald-900">
+                Register a new medicine in your manufacturer catalog (replaces 3-med default seed limit):
+              </p>
+              <div className="grid gap-2 sm:grid-cols-3">
+                <div className="sm:col-span-2">
+                  <input
+                    className="field text-xs py-1.5"
+                    placeholder="Medicine name (e.g. Paracetamol 650mg, Remdesivir)"
+                    value={newMedName}
+                    onChange={(e) => setNewMedName(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <input
+                    className="field text-xs py-1.5"
+                    placeholder="Category (e.g. Analgesic, Antiviral)"
+                    value={newMedCategory}
+                    onChange={(e) => setNewMedCategory(e.target.value)}
+                  />
+                </div>
+                <div className="sm:col-span-2">
+                  <input
+                    className="field text-xs py-1.5"
+                    placeholder="Default Dosage & packaging spec"
+                    value={newMedDosage}
+                    onChange={(e) => setNewMedDosage(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <button
+                    type="button"
+                    onClick={handleAddMedicine}
+                    disabled={addingMed || !newMedName.trim()}
+                    className="btn-primary w-full text-xs py-1.5"
+                  >
+                    {addingMed ? "Adding…" : "Save Medicine"}
+                  </button>
+                </div>
+              </div>
+              {medSuccessMsg && (
+                <p className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700">
+                  <Check className="h-3.5 w-3.5" /> {medSuccessMsg}
+                </p>
+              )}
+            </div>
+          ) : null}
+
+          {medicines.length > 0 ? (
+            <select
+              className="field"
+              value={drugName}
+              onChange={(e) => setDrugName(e.target.value)}
+            >
+              {medicines.map((d) => (
+                <option key={d} value={d}>
+                  {d}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <div className="rounded-lg border border-dashed border-gray-300 p-3 text-center text-xs text-gray-500">
+              No medicines registered in your organization yet. Use the <strong>&quot;+ Add custom medicine&quot;</strong> button above to specify your organization&apos;s product name, dosage, and category.
+            </div>
+          )}
         </div>
         <div>
           <label className="label">Lot number</label>
@@ -166,7 +303,7 @@ export function ManufacturerPanel({ onIssued }: { onIssued?: () => void }) {
           />
         </div>
         <div className="sm:col-span-2">
-          <button type="submit" className="btn-primary" disabled={loading}>
+          <button type="submit" className="btn-primary" disabled={loading || !drugName}>
             <FlaskConical className="h-4 w-4" />
             {loading ? "Anchoring on Base Sepolia…" : "Issue Batch on Base Sepolia"}
           </button>

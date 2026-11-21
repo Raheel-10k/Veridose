@@ -3,8 +3,53 @@ import type { BatchStatusCode } from "./constants";
 export type DemoRoleName =
   | "Regulator"
   | "Manufacturer"
+  | "Depot"
   | "Distributor"
   | "Pharmacist";
+
+export type UserRole =
+  | "Manufacturer"
+  | "Depot"
+  | "Distributor"
+  | "Pharmacist"
+  | "Inspector"
+  | "Regulator";
+
+export interface CheckpointRecord {
+  id: string;
+  batchAttestationUID: string;
+  routePlan: string;
+  checkpointName: string;
+  location: string;
+  estimatedArrival: string;
+  lastTxHash: string;
+  status: "SCHEDULED" | "INSPECTED_OK" | "FLAGGED_TAMPERED";
+  inspectedAt?: string;
+  inspectorName?: string;
+  inspectorNote?: string;
+  attestationUID?: string;
+  createdAt: string;
+}
+
+export interface UserRecord {
+  id: string;
+  email: string;
+  name: string;
+  role: UserRole;
+  orgName: string;
+  facilityName: string;
+  createdAt: string;
+}
+
+export interface MedicineCatalogRecord {
+  id: string;
+  name: string;
+  description?: string;
+  defaultDosage?: string;
+  category?: string;
+  createdBy?: string;
+  createdAt: string;
+}
 
 export interface TagRecord {
   uid: string;
