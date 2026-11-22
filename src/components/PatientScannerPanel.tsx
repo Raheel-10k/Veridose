@@ -15,7 +15,7 @@ import {
   Camera,
   XCircle,
 } from "lucide-react";
-import { Html5Qrcode } from "html5-qrcode";
+import { Html5Qrcode, Html5QrcodeScannerState } from "html5-qrcode";
 import {
   extractVerifyTarget,
   getWebNfcSupport,
@@ -51,6 +51,7 @@ export function PatientScannerPanel({
   const [qrScanning, setQrScanning] = useState(false);
   const [qrScannerError, setQrScannerError] = useState<string | null>(null);
   const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
+  const hasNavigatedRef = useRef(false);
 
   // Inspector & Checkpoint Inspection Mode
   const isInspector = user?.role === "Inspector" || user?.role === "Regulator" || user?.role === "Pharmacist";
@@ -174,6 +175,7 @@ export function PatientScannerPanel({
   async function startQrScanner() {
     setQrScannerError(null);
     setQrScanning(true);
+    hasNavigatedRef.current = false;
     // Allow DOM element to mount
     setTimeout(async () => {
       try {
@@ -188,15 +190,26 @@ export function PatientScannerPanel({
             fps: 10,
             qrbox: { width: 250, height: 250 },
           },
-          (decodedText) => {
-            // QR Code decoded!
-            html5QrCode
-              .stop()
-              .then(() => {
-                html5QrCode.clear();
-                setQrScanning(false);
-              })
-              .catch(() => {});
+          async (decodedText) => {
+            // Guard against multiple callback frames firing simultaneously
+            if (hasNavigatedRef.current) return;
+            hasNavigatedRef.current = true;
+
+            try {
+              if (
+                html5QrCode.getState() === Html5QrcodeScannerState.SCANNING ||
+                html5QrCode.getState() === Html5QrcodeScannerState.PAUSED
+              ) {
+                await html5QrCode.stop();
+              }
+              html5QrCode.clear();
+            } catch {
+              // ignore state stop errors
+            } finally {
+              html5QrCodeRef.current = null;
+              setQrScanning(false);
+            }
+
             const target = extractVerifyTarget(decodedText);
             if (target) {
               goVerify(target);
@@ -220,10 +233,16 @@ export function PatientScannerPanel({
   }
 
   async function stopQrScanner() {
-    if (html5QrCodeRef.current) {
+    const instance = html5QrCodeRef.current;
+    if (instance) {
       try {
-        await html5QrCodeRef.current.stop();
-        html5QrCodeRef.current.clear();
+        if (
+          instance.getState() === Html5QrcodeScannerState.SCANNING ||
+          instance.getState() === Html5QrcodeScannerState.PAUSED
+        ) {
+          await instance.stop();
+        }
+        instance.clear();
       } catch {
         // ignore
       }
@@ -234,8 +253,19 @@ export function PatientScannerPanel({
 
   useEffect(() => {
     return () => {
-      if (html5QrCodeRef.current) {
-        html5QrCodeRef.current.stop().catch(() => {});
+      const instance = html5QrCodeRef.current;
+      if (instance) {
+        try {
+          if (
+            instance.getState() === Html5QrcodeScannerState.SCANNING ||
+            instance.getState() === Html5QrcodeScannerState.PAUSED
+          ) {
+            instance.stop().then(() => instance.clear()).catch(() => {});
+          }
+        } catch {
+          // ignore
+        }
+        html5QrCodeRef.current = null;
       }
     };
   }, []);
