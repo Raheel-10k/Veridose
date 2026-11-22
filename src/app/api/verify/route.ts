@@ -5,7 +5,6 @@ import { parseNfcSearchParams } from "@/lib/nfc-query";
 import { verifyNfcTap } from "@/lib/nfc-crypto";
 import { jsonError, jsonOk, attestationExplorerUrl } from "@/lib/api";
 import { TrustVerdict, type TrustVerdictPayload } from "@/lib/verdicts";
-import type { NfcVerifyResult, TagRecord } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -15,13 +14,13 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const parsed = parseNfcSearchParams(searchParams);
 
-    let nfcResult: NfcVerifyResult | null = null;
+    let nfcResult = null as ReturnType<typeof verifyNfcTap> | null;
     let tag =
       (parsed.uid ? await getTagByUid(parsed.uid) : null) ||
       (parsed.batchUid ? await getTagByBatchUid(parsed.batchUid) : null);
 
     if (parsed.uid && parsed.counter != null && parsed.cmac) {
-      nfcResult = await verifyNfcTap(parsed.uid, parsed.counter, parsed.cmac);
+      nfcResult = verifyNfcTap(parsed.uid, parsed.counter, parsed.cmac);
       tag = nfcResult.tag ?? tag;
     }
 
@@ -91,7 +90,7 @@ export async function GET(request: Request) {
 }
 
 function buildVerdict(
-  nfc: NfcVerifyResult | null,
+  nfc: ReturnType<typeof verifyNfcTap> | null,
   batch: {
     batchAttestationUID: string;
     exists: boolean;
