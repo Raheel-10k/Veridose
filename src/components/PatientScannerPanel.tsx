@@ -12,7 +12,10 @@ import {
   Clock,
   Link as LinkIcon,
   CheckCircle,
+  Camera,
+  XCircle,
 } from "lucide-react";
+import { Html5Qrcode } from "html5-qrcode";
 import {
   extractVerifyTarget,
   getWebNfcSupport,
@@ -43,6 +46,11 @@ export function PatientScannerPanel({
   const [manual, setManual] = useState("");
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Camera QR Scanner state
+  const [qrScanning, setQrScanning] = useState(false);
+  const [qrScannerError, setQrScannerError] = useState<string | null>(null);
+  const html5QrCodeRef = useRef<Html5Qrcode | null>(null);
 
   // Inspector & Checkpoint Inspection Mode
   const isInspector = user?.role === "Inspector" || user?.role === "Regulator" || user?.role === "Pharmacist";
@@ -162,6 +170,75 @@ export function PatientScannerPanel({
     setScanning(false);
     setStatus("Scan cancelled.");
   }
+
+  async function startQrScanner() {
+    setQrScannerError(null);
+    setQrScanning(true);
+    // Allow DOM element to mount
+    setTimeout(async () => {
+      try {
+        const qrRegion = document.getElementById("qr-reader-region");
+        if (!qrRegion) return;
+        const html5QrCode = new Html5Qrcode("qr-reader-region");
+        html5QrCodeRef.current = html5QrCode;
+
+        await html5QrCode.start(
+          { facingMode: "environment" },
+          {
+            fps: 10,
+            qrbox: { width: 250, height: 250 },
+          },
+          (decodedText) => {
+            // QR Code decoded!
+            html5QrCode
+              .stop()
+              .then(() => {
+                html5QrCode.clear();
+                setQrScanning(false);
+              })
+              .catch(() => {});
+            const target = extractVerifyTarget(decodedText);
+            if (target) {
+              goVerify(target);
+            } else {
+              goVerify(decodedText);
+            }
+          },
+          () => {
+            // qr scan failure per frame - ignore
+          }
+        );
+      } catch (err) {
+        setQrScannerError(
+          err instanceof Error
+            ? err.message
+            : "Camera permission denied or camera unavailable."
+        );
+        setQrScanning(false);
+      }
+    }, 100);
+  }
+
+  async function stopQrScanner() {
+    if (html5QrCodeRef.current) {
+      try {
+        await html5QrCodeRef.current.stop();
+        html5QrCodeRef.current.clear();
+      } catch {
+        // ignore
+      }
+      html5QrCodeRef.current = null;
+    }
+    setQrScanning(false);
+  }
+
+  useEffect(() => {
+    return () => {
+      if (html5QrCodeRef.current) {
+        html5QrCodeRef.current.stop().catch(() => {});
+      }
+    };
+  }, []);
 
   function submitManual(e: React.FormEvent) {
     e.preventDefault();
@@ -356,6 +433,57 @@ export function PatientScannerPanel({
               </p>
             )}
           </div>
+        )}
+      </div>
+
+      {/* Optical QR Camera Scanner */}
+      <div className="rounded-md border-2 border-emerald-600/30 bg-emerald-50/50 p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-sm font-semibold text-emerald-950">
+            <Camera className="h-4 w-4 text-emerald-700" />
+            Live Camera QR Code Scanner (Inspector &amp; Patient)
+          </div>
+          <span className="rounded bg-emerald-100 px-2 py-0.5 text-[11px] font-semibold text-emerald-800">
+            QR Scanner
+          </span>
+        </div>
+        <p className="text-xs text-emerald-900/80">
+          Scan the medicine batch QR code directly from a printed label, another phone screen, or packaging to verify cryptographic authenticity on-chain.
+        </p>
+
+        {qrScanning ? (
+          <div className="space-y-3">
+            <div className="overflow-hidden rounded-lg border border-emerald-300 bg-black max-w-sm mx-auto">
+              <div id="qr-reader-region" className="w-full" />
+            </div>
+            <div className="flex justify-center">
+              <button
+                type="button"
+                className="btn-danger inline-flex items-center gap-1.5 text-xs py-2 px-3"
+                onClick={stopQrScanner}
+              >
+                <XCircle className="h-4 w-4" />
+                Close Camera
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div>
+            <button
+              type="button"
+              className="btn-primary inline-flex items-center gap-2 text-xs py-2.5 px-4 shadow-sm"
+              onClick={startQrScanner}
+            >
+              <Camera className="h-4 w-4" />
+              Open Camera to Scan QR Code
+            </button>
+          </div>
+        )}
+
+        {qrScannerError && (
+          <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700">
+            {qrScannerError}
+          </p>
         )}
       </div>
 
